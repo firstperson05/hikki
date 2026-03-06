@@ -32,6 +32,16 @@ extern "C" {
         kind: i32,
     ) -> i32;
     fn cudaDeviceSynchronize() -> i32;
+
+    pub fn launch_ssm_scan(
+        a_seq: *const f32,
+        b_seq: *const f32,
+        out: *mut f32,
+        h_states: *mut f32,
+        batch_size: i32,
+        seq_len: i32,
+        dim: i32,
+    );
 }
 
 pub struct CudaDevice {
@@ -87,14 +97,10 @@ impl CudaDevice {
             let alpha = 1.0f32;
             let beta = 0.0f32;
 
-            // cuBLAS is column-major. To compute C = A * B (row-major):
-            // We can compute C^T = B^T * A^T
-            // If A is (M,K) and B is (K,N), then C is (M,N)
-            // In column-major: B^T is (N,K), A^T is (K,M), result is (N,M)
             cublasSgemm_v2(
                 self.handle,
                 0,
-                0, // CUBLAS_OP_N
+                0,
                 n as i32,
                 m as i32,
                 k as i32,
@@ -120,6 +126,79 @@ impl CudaDevice {
             }
         }
         Ok(())
+    }
+
+    pub fn alloc(&self, size_bytes: usize) -> Result<*mut std::ffi::c_void, String> {
+        let mut ptr = ptr::null_mut();
+        unsafe {
+            if cudaMalloc(&mut ptr, size_bytes) == 0 {
+                Ok(ptr)
+            } else {
+                Err("cudaMalloc failed".into())
+            }
+        }
+    }
+
+    pub fn free(&self, ptr: *mut std::ffi::c_void) {
+        unsafe {
+            cudaFree(ptr);
+        }
+    }
+
+    pub fn copy_h2d(&self, dst: *mut std::ffi::c_void, src: &[f32]) -> Result<(), String> {
+        unsafe {
+            if cudaMemcpy(dst, src.as_ptr() as *const _, src.len() * 4, 1) == 0 {
+                Ok(())
+            } else {
+                Err("cudaMemcpy H2D failed".into())
+            }
+        }
+    }
+
+    pub fn copy_d2h(&self, dst: &mut [f32], src: *mut std::ffi::c_void) -> Result<(), String> {
+        unsafe {
+            if cudaMemcpy(dst.as_mut_ptr() as *mut _, src, dst.len() * 4, 2) == 0 {
+                Ok(())
+            } else {
+                Err("cudaMemcpy D2H failed".into())
+            }
+        }
+    }
+
+    pub fn matmul_persistent(
+        &self,
+        m: usize,
+        k: usize,
+        n: usize,
+        d_a: *const std::ffi::c_void,
+        d_b: *const std::ffi::c_void,
+        d_c: *mut std::ffi::c_void,
+    ) -> Result<(), String> {
+        unsafe {
+            let alpha = 1.0f32;
+            let beta = 0.0f32;
+            if cublasSgemm_v2(
+                self.handle,
+                0,
+                0, // CUBLAS_OP_N
+                n as i32,
+                m as i32,
+                k as i32,
+                &alpha,
+                d_b as *const f32,
+                n as i32,
+                d_a as *const f32,
+                k as i32,
+                &beta,
+                d_c as *mut f32,
+                n as i32,
+            ) == 0
+            {
+                Ok(())
+            } else {
+                Err("cublasSgemm failed".into())
+            }
+        }
     }
 }
 

@@ -1,11 +1,18 @@
 pub mod autograd;
 pub mod ops;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DevicePtr(pub usize);
+
+unsafe impl Send for DevicePtr {}
+unsafe impl Sync for DevicePtr {}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Tensor {
     pub shape: Vec<usize>,
     pub strides: Vec<usize>,
     pub data: Vec<f32>,
+    pub device_ptr: Option<DevicePtr>,
 }
 
 impl Tensor {
@@ -29,6 +36,7 @@ impl Tensor {
             shape,
             strides,
             data,
+            device_ptr: None,
         })
     }
 
@@ -63,6 +71,22 @@ impl Tensor {
             shape.iter().product()
         };
         Self::new(shape, vec![0.0; size]).unwrap()
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn to_cuda(&mut self, device: &crate::cuda::CudaDevice) -> Result<(), String> {
+        let ptr = device.alloc(self.numel() * 4)?;
+        device.copy_h2d(ptr, &self.data)?;
+        self.device_ptr = Some(DevicePtr(ptr as usize));
+        Ok(())
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn to_cpu(&mut self, device: &crate::cuda::CudaDevice) -> Result<(), String> {
+        if let Some(ptr) = self.device_ptr {
+            device.copy_d2h(&mut self.data, ptr.0 as *mut std::ffi::c_void)?;
+        }
+        Ok(())
     }
 
     /// Checks if the tensor memory layout is contiguous.

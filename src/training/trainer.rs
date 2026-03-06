@@ -135,6 +135,21 @@ impl Trainer {
     ) {
         let ppl = loss.exp();
         let lr = self.optimizer.lr;
+        let frac = step as f64 / config.max_steps as f64;
+
+        // Progress bar (matches BPE style)
+        fn progress_bar_str(frac: f64, width: usize) -> String {
+            let filled = (frac * width as f64) as usize;
+            let mut bar = String::with_capacity(width);
+            for i in 0..width {
+                if i < filled {
+                    bar.push('█');
+                } else {
+                    bar.push('░');
+                }
+            }
+            bar
+        }
 
         // ETA
         let steps_remaining = config.max_steps.saturating_sub(step);
@@ -145,16 +160,23 @@ impl Trainer {
         };
         let eta_secs = steps_remaining as f64 * secs_per_step;
 
-        if step % 1 == 0 {
-            let elapsed_str = fmt_duration(elapsed_total);
-            let eta_str = fmt_eta(eta_secs);
-            let lr_str = format!("{:.2e}", lr);
+        let hardware = if cfg!(feature = "cuda") { "GPU" } else { "CPU" };
+        let progress = (frac * 100.0) as usize;
 
-            // Single line for Colab/simple terminals
-            print!("\r[Step {:>5}/{:<5}] Loss: {:.4} | Ppl: {:.2} | LR: {} | {:.1}k tok/s | ETA: {} | Elapsed: {}    ", 
-                step, config.max_steps, loss, ppl, lr_str, tok_per_sec / 1000.0, eta_str, elapsed_str);
-            std::io::stdout().flush().unwrap();
-        }
+        // Print single line with carriage return
+        print!("\r[Train] {} {:>3}% | Step {:>5}/{} | Loss: {:.4} | Ppl: {:.1} | LR: {:.2e} | {:>5.1}k tok/s | {} | ETA: {}    ",
+            progress_bar_str(frac, 15),
+            progress,
+            step,
+            config.max_steps,
+            loss,
+            ppl,
+            lr,
+            tok_per_sec / 1000.0,
+            hardware,
+            fmt_eta(eta_secs)
+        );
+        std::io::stdout().flush().unwrap();
     }
 
     pub fn train(&mut self, config: &TrainConfig) -> Result<(), String> {
@@ -165,6 +187,15 @@ impl Trainer {
         let mut last_log_time = Instant::now();
         let train_start = Instant::now();
         let mut dash_state = DashboardState::new();
+
+        #[cfg(feature = "cuda")]
+        {
+            use std::sync::OnceLock;
+            static CUDA_INIT: OnceLock<Option<crate::cuda::CudaDevice>> = OnceLock::new();
+            if let Some(device) = CUDA_INIT.get_or_init(crate::cuda::CudaDevice::new) {
+                self.model.to_cuda(device);
+            }
+        }
 
         println!("Starting training from step {}...", step);
 

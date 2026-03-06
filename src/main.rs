@@ -90,7 +90,13 @@ fn print_startup_banner(vocab_size: usize, n_layer: usize, d_model: usize, param
         "Layers       : {}  |  d_model: {}  |  d_ffn: {}",
         n_layer, d_model, d_ffn
     );
-    println!("Device       : CPU ({} threads via rayon)", threads);
+
+    let device_str = if cfg!(feature = "cuda") {
+        "CUDA (cuBLAS)"
+    } else {
+        "CPU (Rayon/AVX2)"
+    };
+    println!("Device       : {} | Threads: {}", device_str, threads);
     println!("AVX2         : {}", detect_avx2());
     println!();
 }

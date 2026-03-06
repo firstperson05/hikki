@@ -78,13 +78,35 @@ impl Tensor {
 
         #[cfg(feature = "cuda")]
         {
-            static CUDA: OnceLock<Option<CudaDevice>> = OnceLock::new();
-            if let Some(device) = CUDA.get_or_init(CudaDevice::new) {
+            static CUDA_CELL: OnceLock<Option<CudaDevice>> = OnceLock::new();
+            if let Some(device) = CUDA_CELL.get_or_init(CudaDevice::new) {
+                // Try to use persistent GPU pointers if they exist
+                if let (Some(ptr_a), Some(ptr_b)) = (self.device_ptr, other.device_ptr) {
+                    let mut out_tensor = Tensor::zeros(vec![m, n]);
+                    let ptr_c = device.alloc(m * n * 4).unwrap();
+                    if device
+                        .matmul_persistent(
+                            m,
+                            k1,
+                            n,
+                            ptr_a.0 as *const _,
+                            ptr_b.0 as *const _,
+                            ptr_c as *mut _,
+                        )
+                        .is_ok()
+                    {
+                        device.copy_d2h(&mut out_tensor.data, ptr_c).unwrap();
+                        device.free(ptr_c);
+                        return Ok(out_tensor);
+                    }
+                }
+
+                // Fallback to one-shot matmul (which uses allocation inside)
                 if device
                     .matmul(m, k1, n, &self.data, &other.data, &mut out)
                     .is_ok()
                 {
-                    return Tensor::new(vec![m, n], out);
+                    return Ok(Tensor::new(vec![m, n], out).unwrap());
                 }
             }
         }
