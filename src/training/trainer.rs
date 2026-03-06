@@ -48,18 +48,6 @@ fn fmt_eta(secs: f64) -> String {
     }
 }
 
-fn fmt_tokens(n: usize) -> String {
-    if n >= 1_000_000_000 {
-        format!("{:.2}B", n as f64 / 1_000_000_000.0)
-    } else if n >= 1_000_000 {
-        format!("{:.1}M", n as f64 / 1_000_000.0)
-    } else if n >= 1_000 {
-        format!("{:.1}K", n as f64 / 1_000.0)
-    } else {
-        format!("{}", n)
-    }
-}
-
 // ── Dashboard state ───────────────────────────────────────────────────────────
 
 struct DashboardState {
@@ -69,9 +57,7 @@ struct DashboardState {
     last_val_loss: Option<f32>,
     last_val_step: usize,
     last_saved_ckpt: String,
-    last_sample: String,
     total_tokens_ever: usize,
-    dashboard_lines: usize, // how many lines the dashboard occupies (for cursor rewind)
 }
 
 impl DashboardState {
@@ -83,9 +69,7 @@ impl DashboardState {
             last_val_loss: None,
             last_val_step: 0,
             last_saved_ckpt: String::new(),
-            last_sample: String::new(),
             total_tokens_ever: 0,
-            dashboard_lines: 0,
         }
     }
 }
@@ -144,59 +128,13 @@ impl Trainer {
         config: &TrainConfig,
         step: usize,
         loss: f32,
-        grad_norm: f32,
+        _grad_norm: f32,
         tok_per_sec: f32,
         elapsed_total: f64,
-        state: &DashboardState,
+        _state: &DashboardState,
     ) {
-        let is_windows = cfg!(target_os = "windows");
-
-        // Rewind cursor on non-Windows (ANSI support)
-        if !is_windows && state.dashboard_lines > 0 {
-            print!("\x1B[{}A\r", state.dashboard_lines);
-        }
-
-        let frac = step as f64 / config.max_steps as f64;
         let ppl = loss.exp();
         let lr = self.optimizer.lr;
-
-        let d_model = self.model.config.n_embd;
-        let _d_ffn = d_model * 4; // Approximation
-        let n_layer = self.model.config.n_layer;
-        let vocab = self.model.config.vocab_size;
-        let param_count = crate::model::lm::HikkiLM::estimate_param_count(&self.model.config);
-        let param_str = if param_count >= 1_000_000 {
-            format!("{:.1}M", param_count as f64 / 1_000_000.0)
-        } else if param_count >= 1_000 {
-            format!("{:.1}K", param_count as f64 / 1_000.0)
-        } else {
-            format!("{}", param_count)
-        };
-
-        // Loss direction arrow
-        let loss_arrow = if loss < state.prev_loss {
-            "\u{2193}" // ↓
-        } else if loss > state.prev_loss {
-            "\u{2191}" // ↑
-        } else {
-            "="
-        };
-
-        // Warmup status
-        let warmup_status = if step >= config.warmup_steps {
-            "[warmup done]"
-        } else {
-            "[warming up]"
-        };
-
-        // Grad norm status
-        let grad_status = if grad_norm > 10.0 {
-            "[WARN]"
-        } else if grad_norm > config.clip_grad_norm {
-            "[CLIP]"
-        } else {
-            "[OK]"
-        };
 
         // ETA
         let steps_remaining = config.max_steps.saturating_sub(step);
@@ -207,111 +145,15 @@ impl Trainer {
         };
         let eta_secs = steps_remaining as f64 * secs_per_step;
 
-        // Total tokens estimate
-        let total_tokens_est =
-            config.max_steps * config.batch_size * config.seq_len * config.grad_accum_steps;
+        if step % 1 == 0 {
+            let elapsed_str = fmt_duration(elapsed_total);
+            let eta_str = fmt_eta(eta_secs);
+            let lr_str = format!("{:.2e}", lr);
 
-        let w = 58; // Inner box width
-        let border_h = "\u{2550}".repeat(w);
-
-        let mut lines = Vec::new();
-        lines.push(format!("\u{2554}{}\u{2557}", border_h));
-        lines.push(format!(
-            "\u{2551}  Hikki LM | {}L {}d | {} params | vocab {:<6} \u{2551}",
-            n_layer, d_model, param_str, vocab
-        ));
-        lines.push(format!("\u{2560}{}\u{2563}", border_h));
-        lines.push(format!(
-            "\u{2551}  Step    : {:>5} / {:<5}  {}  {:>4.1}%{}\u{2551}",
-            step,
-            config.max_steps,
-            progress_bar(frac, 20),
-            frac * 100.0,
-            " ".repeat(w.saturating_sub(50))
-        ));
-        lines.push(format!(
-            "\u{2551}  Loss    : {:<7.4} {} (best: {:.4} @ step {:<5}){}\u{2551}",
-            loss,
-            loss_arrow,
-            if state.best_loss < f32::MAX {
-                state.best_loss
-            } else {
-                loss
-            },
-            state.best_loss_step,
-            " ".repeat(w.saturating_sub(52))
-        ));
-        lines.push(format!(
-            "\u{2551}  Ppl     : {:<8.2}{}\u{2551}",
-            ppl,
-            " ".repeat(w.saturating_sub(20))
-        ));
-        lines.push(format!(
-            "\u{2551}  LR      : {:<10.2e} {:<15}{}\u{2551}",
-            lr,
-            warmup_status,
-            " ".repeat(w.saturating_sub(37))
-        ));
-        lines.push(format!(
-            "\u{2551}  GradNorm: {:<6.2} {:<6}{}\u{2551}",
-            grad_norm,
-            grad_status,
-            " ".repeat(w.saturating_sub(24))
-        ));
-        lines.push(format!("\u{2560}{}\u{2563}", border_h));
-        lines.push(format!(
-            "\u{2551}  Speed   : {:.1}k tok/s  |  ETA: {:<12}{}\u{2551}",
-            tok_per_sec / 1000.0,
-            fmt_eta(eta_secs),
-            " ".repeat(w.saturating_sub(44))
-        ));
-        lines.push(format!(
-            "\u{2551}  Tokens  : {} / {} total{}\u{2551}",
-            fmt_tokens(state.total_tokens_ever),
-            fmt_tokens(total_tokens_est),
-            " ".repeat(w.saturating_sub(35))
-        ));
-        lines.push(format!(
-            "\u{2551}  Elapsed : {:<20}{}\u{2551}",
-            fmt_duration(elapsed_total),
-            " ".repeat(w.saturating_sub(31))
-        ));
-        lines.push(format!("\u{2560}{}\u{2563}", border_h));
-
-        // Val loss line
-        if let Some(val_loss) = state.last_val_loss {
-            lines.push(format!(
-                "\u{2551}  Val Loss: {:.4}  (last eval @ step {:<5}){}\u{2551}",
-                val_loss,
-                state.last_val_step,
-                " ".repeat(w.saturating_sub(44))
-            ));
-        } else {
-            lines.push(format!(
-                "\u{2551}  Val Loss: --  (no eval yet){}\u{2551}",
-                " ".repeat(w.saturating_sub(29))
-            ));
-        }
-
-        // Saved checkpoint line
-        if !state.last_saved_ckpt.is_empty() {
-            lines.push(format!(
-                "\u{2551}  Saved   : {:<44}{}\u{2551}",
-                state.last_saved_ckpt,
-                " ".repeat(w.saturating_sub(55).max(0))
-            ));
-        }
-
-        lines.push(format!("\u{255A}{}\u{255D}", border_h));
-
-        // Sample line below box
-        if !state.last_sample.is_empty() {
-            let truncated: String = state.last_sample.chars().take(60).collect();
-            lines.push(format!("Sample: \"{}...\"", truncated));
-        }
-
-        for line in &lines {
-            println!("{}", line);
+            // Single line for Colab/simple terminals
+            print!("\r[Step {:>5}/{:<5}] Loss: {:.4} | Ppl: {:.2} | LR: {} | {:.1}k tok/s | ETA: {} | Elapsed: {}    ", 
+                step, config.max_steps, loss, ppl, lr_str, tok_per_sec / 1000.0, eta_str, elapsed_str);
+            std::io::stdout().flush().unwrap();
         }
     }
 
