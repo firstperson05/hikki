@@ -62,251 +62,144 @@ impl BpeTokenizer {
         let corpus_bytes = corpus.len();
         println!("[Tokenizer] Reading corpus...  {}", fmt_bytes(corpus_bytes));
 
-        let mut vocab = Vocab::new(); // <PAD>, <UNK>, <BOS>, <EOS> (0..3)
+        let mut vocab = Vocab::new();
         for i in 0..=255u8 {
             vocab.add_token(&format!("<0x{:02X}>", i));
         }
 
-        // ── Step 1: Parallel corpus chunking ──────────────────────────────────
-        let chunk_start = Instant::now();
-        print!("[Tokenizer] Counting pairs...  ");
+        // --- Step 1: Pre-tokenize into word frequencies ---
+        print!("[Tokenizer] Counting word frequencies... ");
         std::io::stdout().flush().unwrap();
 
-        // Split corpus into rayon-sized slices at whitespace boundaries
-        let n_threads = rayon::current_num_threads();
-        let slice_size = corpus_bytes / n_threads.max(1);
-
-        // Find split points at whitespace boundaries
-        let mut split_points = vec![0usize];
-        for t in 1..n_threads {
-            let approx = t * slice_size;
-            // Walk forward to find next whitespace
-            let mut pos = approx.min(corpus_bytes);
-            let bytes_ref = corpus.as_bytes();
-            while pos < corpus_bytes
-                && bytes_ref[pos] != b' '
-                && bytes_ref[pos] != b'\n'
-                && bytes_ref[pos] != b'\r'
-                && bytes_ref[pos] != b'\t'
-            {
-                pos += 1;
-            }
-            if pos < corpus_bytes {
-                pos += 1; // include the whitespace in the previous chunk
-            }
-            if pos > *split_points.last().unwrap() && pos < corpus_bytes {
-                split_points.push(pos);
+        let mut word_counts: HashMap<Vec<u32>, u32> = HashMap::with_capacity(100_000);
+        let mut current_word = Vec::with_capacity(32);
+        for b in corpus.bytes() {
+            current_word.push(b as u32 + 4);
+            if b == b' ' || b == b'\n' || b == b'\r' || b == b'\t' {
+                *word_counts.entry(current_word.clone()).or_insert(0) += 1;
+                current_word.clear();
             }
         }
-        split_points.push(corpus_bytes);
+        if !current_word.is_empty() {
+            *word_counts.entry(current_word).or_insert(0) += 1;
+        }
+        println!("Done! ({} unique words)", word_counts.len());
 
-        // Process each slice in parallel: build chunk frequency maps
-        let chunks: HashMap<Vec<u32>, u32> = split_points
-            .par_windows(2)
-            .map(|w| {
-                let slice = &corpus.as_bytes()[w[0]..w[1]];
-                let mut local_chunks: HashMap<Vec<u32>, u32> = HashMap::with_capacity(100_000);
-                let mut current = Vec::with_capacity(32);
-                for &b in slice {
-                    current.push(b as u32 + 4);
-                    if b == b' ' || b == b'\n' || b == b'\r' || b == b'\t' {
-                        *local_chunks.entry(current.clone()).or_insert(0) += 1;
-                        current.clear();
-                    }
-                }
-                if !current.is_empty() {
-                    *local_chunks.entry(current).or_insert(0) += 1;
-                }
-                local_chunks
-            })
-            .reduce(
-                || HashMap::with_capacity(100_000),
-                |mut a, b| {
-                    for (k, v) in b {
-                        *a.entry(k).or_insert(0) += v;
-                    }
-                    a
-                },
-            );
+        // --- Step 2: Initial pair counts ---
+        print!("[Tokenizer] Initializing pair counts... ");
+        std::io::stdout().flush().unwrap();
+        let mut pair_counts: HashMap<(u32, u32), i64> = HashMap::with_capacity(200_000);
+        for (word, &count) in &word_counts {
+            for i in 0..word.len().saturating_sub(1) {
+                let pair = (word[i], word[i + 1]);
+                *pair_counts.entry(pair).or_insert(0) += count as i64;
+            }
+        }
+        println!("Done!");
 
-        // Compute initial pair frequencies in parallel
-        let mut pair_counts: HashMap<(u32, u32), u32> = chunks
-            .par_iter()
-            .fold(
-                || HashMap::with_capacity(100_000),
-                |mut acc, (chunk, &count)| {
-                    for i in 0..chunk.len().saturating_sub(1) {
-                        let pair = (chunk[i], chunk[i + 1]);
-                        *acc.entry(pair).or_insert(0) += count;
-                    }
-                    acc
-                },
-            )
-            .reduce(
-                || HashMap::with_capacity(100_000),
-                |mut a, b| {
-                    for (k, v) in b {
-                        *a.entry(k).or_insert(0) += v;
-                    }
-                    a
-                },
-            );
-
-        let chunk_elapsed = chunk_start.elapsed().as_secs_f64();
-        let speed = corpus_bytes as f64 / chunk_elapsed;
-        println!(
-            "{}  100% | {} | {}/s",
-            progress_bar(1.0, 20),
-            fmt_bytes(corpus_bytes),
-            fmt_bytes(speed as usize)
-        );
-
-        // ── Step 2: BPE merge loop with BinaryHeap ────────────────────────────
+        // --- Step 3: Progressive Merge ---
         let mut merges = Vec::new();
         let mut next_id: u32 = 260;
         let num_merges = vocab_size.saturating_sub(260);
-        let mut chunks_vec: Vec<(Vec<u32>, u32)> = chunks.into_iter().collect();
-        let mut pair_to_chunks: HashMap<(u32, u32), HashSet<usize>> =
-            HashMap::with_capacity(pair_counts.len());
 
-        // Build the inverted index: which chunks contain which pairs
-        for (chunk_idx, (chunk, _)) in chunks_vec.iter().enumerate() {
-            for i in 0..chunk.len().saturating_sub(1) {
-                let pair = (chunk[i], chunk[i + 1]);
-                pair_to_chunks.entry(pair).or_default().insert(chunk_idx);
-            }
-        }
-
-        // Build initial max-heap
+        // Initial Max-Heap
         let mut heap: BinaryHeap<HeapEntry> = pair_counts
             .iter()
-            .filter(|(_, &c)| c > 0)
-            .map(|(&pair, &count)| HeapEntry { count, pair })
+            .map(|(&pair, &count)| HeapEntry {
+                count: count as u32,
+                pair,
+            })
             .collect();
 
         let merge_start = Instant::now();
         let mut last_report = Instant::now();
-        let mut _merges_since_report = 0usize;
 
         for merge_idx in 0..num_merges {
-            // Pop stale entries until we find a valid one
-            let best = loop {
-                match heap.pop() {
-                    None => break None,
-                    Some(entry) => {
-                        let actual = pair_counts.get(&entry.pair).copied().unwrap_or(0);
-                        if actual == 0 {
-                            continue; // stale
-                        }
-                        if actual != entry.count {
-                            heap.push(HeapEntry {
-                                count: actual,
-                                pair: entry.pair,
-                            });
-                            continue;
-                        }
-                        break Some(entry);
+            // Find best pair (max count) and skip stale heap entries
+            let mut best_pair = None;
+            while let Some(entry) = heap.pop() {
+                if let Some(&actual_count) = pair_counts.get(&entry.pair) {
+                    if actual_count as u32 == entry.count {
+                        best_pair = Some(entry.pair);
+                        break;
+                    } else if actual_count > 0 {
+                        // Re-push updated count
+                        heap.push(HeapEntry {
+                            count: actual_count as u32,
+                            pair: entry.pair,
+                        });
                     }
                 }
-            };
+            }
 
-            let best = match best {
-                Some(b) => b,
+            let pair = match best_pair {
+                Some(p) => p,
                 None => break,
             };
 
-            let best_pair = best.pair;
             let new_id = next_id;
             next_id += 1;
-            merges.push((best_pair, new_id));
+            merges.push((pair, new_id));
             vocab.add_token(&format!("<Token_{}>", new_id));
 
-            // Remove the merged pair everywhere
-            pair_counts.remove(&best_pair);
-            let target_chunks = pair_to_chunks.remove(&best_pair).unwrap_or_default();
-
-            // Apply merge ONLY to the affected chunks
-            for chunk_idx in target_chunks {
-                let (chunk, count) = &chunks_vec[chunk_idx];
-                let count = *count;
-
-                // 1. Remove old pairs from global counts and inverted index
-                for i in 0..chunk.len().saturating_sub(1) {
-                    let p = (chunk[i], chunk[i + 1]);
-                    if p != best_pair {
-                        // best_pair is already removed from index
-                        if let Some(c) = pair_counts.get_mut(&p) {
-                            *c = c.saturating_sub(count);
-                        }
-                        if let Some(set) = pair_to_chunks.get_mut(&p) {
-                            set.remove(&chunk_idx);
-                        }
-                    }
-                }
-
-                // 2. Apply merge
-                let mut new_chunk = Vec::with_capacity(chunk.len());
+            // Update word counts and pair counts
+            let mut new_word_counts = HashMap::with_capacity(word_counts.len());
+            for (word, count) in word_counts {
+                let count = count;
+                let mut new_word = Vec::with_capacity(word.len());
                 let mut i = 0;
-                while i < chunk.len() {
-                    if i < chunk.len() - 1 && chunk[i] == best_pair.0 && chunk[i + 1] == best_pair.1
-                    {
-                        new_chunk.push(new_id);
+                let mut changed = false;
+
+                while i < word.len() {
+                    if i < word.len() - 1 && word[i] == pair.0 && word[i + 1] == pair.1 {
+                        // Before merge, remove old surrounding pairs
+                        if i > 0 {
+                            *pair_counts.entry((word[i - 1], word[i])).or_insert(0) -= count as i64;
+                        }
+                        if i < word.len() - 2 {
+                            // Don't remove the pair we are currently merging
+                            if (word[i + 1], word[i + 2]) != pair {
+                                *pair_counts.entry((word[i + 1], word[i + 2])).or_insert(0) -=
+                                    count as i64;
+                            }
+                        }
+
+                        new_word.push(new_id);
                         i += 2;
+                        changed = true;
                     } else {
-                        new_chunk.push(chunk[i]);
+                        new_word.push(word[i]);
                         i += 1;
                     }
                 }
 
-                // 3. Add new pairs to global counts and inverted index
-                for i in 0..new_chunk.len().saturating_sub(1) {
-                    let p = (new_chunk[i], new_chunk[i + 1]);
-                    let new_count = pair_counts.entry(p).or_insert(0);
-                    *new_count += count;
-                    heap.push(HeapEntry {
-                        count: *new_count,
-                        pair: p,
-                    });
-                    pair_to_chunks.entry(p).or_default().insert(chunk_idx);
+                if changed {
+                    // Add new surrounding pairs
+                    for j in 0..new_word.len().saturating_sub(1) {
+                        let p = (new_word[j], new_word[j + 1]);
+                        if p.0 == new_id || p.1 == new_id {
+                            let c = pair_counts.entry(p).or_insert(0);
+                            *c += count as i64;
+                            heap.push(HeapEntry {
+                                count: *c as u32,
+                                pair: p,
+                            });
+                        }
+                    }
                 }
-
-                // 4. Update the stored chunk
-                chunks_vec[chunk_idx].0 = new_chunk;
+                *new_word_counts.entry(new_word).or_insert(0) += count;
             }
-            _merges_since_report += 1;
+            word_counts = new_word_counts;
+            pair_counts.remove(&pair);
 
-            // Progress reporting ~ every 0.5s or every 100 merges
-            let now = Instant::now();
-            if now.duration_since(last_report).as_millis() > 500 || merge_idx == num_merges - 1 {
+            // Progress
+            if last_report.elapsed().as_millis() > 500 {
                 let frac = (merge_idx + 1) as f64 / num_merges as f64;
-                let elapsed_total = merge_start.elapsed().as_secs_f64();
-                let rate = if elapsed_total > 0.0 {
-                    (merge_idx + 1) as f64 / elapsed_total
-                } else {
-                    0.0
-                };
-                let remaining = if rate > 0.0 {
-                    (num_merges - merge_idx - 1) as f64 / rate
-                } else {
-                    0.0
-                };
-                let eta_str = if remaining > 60.0 {
-                    format!("{:.0}m {:02.0}s", remaining / 60.0, remaining % 60.0)
-                } else {
-                    format!("{:.0}s", remaining)
-                };
-                print!(
-                    "\r[Tokenizer] Training BPE...    {}  {:3.0}% | {}/{} merges | {:.0} merges/s | eta {}   ",
-                    progress_bar(frac, 20),
-                    frac * 100.0,
-                    merge_idx + 1,
-                    num_merges,
-                    rate,
-                    eta_str
-                );
+                let rate = (merge_idx + 1) as f64 / merge_start.elapsed().as_secs_f64();
+                print!("\r[Tokenizer] Training BPE...    {}  {:3.0}% | {}/{} merges | {:.0} merges/s   ",
+                    progress_bar(frac, 20), frac * 100.0, merge_idx + 1, num_merges, rate);
                 std::io::stdout().flush().unwrap();
-                last_report = now;
-                _merges_since_report = 0;
+                last_report = Instant::now();
             }
         }
         println!();
