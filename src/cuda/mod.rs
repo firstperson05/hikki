@@ -38,6 +38,9 @@ pub struct CudaDevice {
     handle: *mut std::ffi::c_void,
 }
 
+unsafe impl Send for CudaDevice {}
+unsafe impl Sync for CudaDevice {}
+
 impl CudaDevice {
     pub fn new() -> Option<Self> {
         let mut handle = ptr::null_mut();
