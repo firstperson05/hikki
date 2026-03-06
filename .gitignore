@@ -1,0 +1,9 @@
+﻿@
+/data/*.txt
+/data/*.bin
+/ckpts/*.ckpt
+/ckpts/*.opt
+/ckpts/*.bin
+target/
+Cargo.lock
+

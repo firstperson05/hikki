@@ -2,7 +2,7 @@
 # Target: ~15 minute training on TinyStories dataset (CPU/GPU)
 
 [model]
-vocab_size = 16384     # Standard BPE vocab size
+vocab_size = 32768     # Increased to 32k for Russian Wiki
 n_layer = 6            # Depth
 d_model = 256          # Model dimension
 d_ffn = 1024           # FFN inner dimension
@@ -11,8 +11,8 @@ dropout = 0.1          # Regularization
 [train]
 batch_size = 32        # Total batch size
 seq_len = 256          # Context length
-max_steps = 5000       # Total training steps
-warmup_steps = 500     # LR warmup
+max_steps = 10000      # Increased for larger dataset
+warmup_steps = 1000     # LR warmup
 lr = 5e-4              # Peak learning rate
 min_lr = 5e-5          # Final learning rate
 weight_decay = 0.1     # Weight decay for AdamW
@@ -24,8 +24,8 @@ clip_grad_norm = 1.0   # Gradient clipping
 checkpoint_dir = "ckpts"
 
 [tokenizer]
-vocab_size = 16384
-path = "tokenizer_16k.bpe"
+vocab_size = 32768
+path = "tokenizer_32k.bpe"
 
 [data]
 train_path = "data/train.txt"

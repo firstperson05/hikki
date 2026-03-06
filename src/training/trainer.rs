@@ -473,6 +473,61 @@ impl Trainer {
             step,
             fmt_duration(train_start.elapsed().as_secs_f64())
         );
+
+        // Final save as model_final.ckpt
+        self.save_checkpoint_custom(config, "model_final.ckpt")?;
+        println!("[Saved] model_final.ckpt");
+
+        Ok(())
+    }
+
+    pub fn save_checkpoint_custom(&self, config: &TrainConfig, name: &str) -> Result<(), String> {
+        let dir = Path::new(&config.checkpoint_dir);
+        let ckpt_path = dir.join(name);
+        let mut file = BufWriter::new(fs::File::create(&ckpt_path).map_err(|e| e.to_string())?);
+
+        // Header
+        file.write_all(b"FMLM").map_err(|e| e.to_string())?;
+        file.write_all(&1u32.to_le_bytes())
+            .map_err(|e| e.to_string())?; // version
+        file.write_all(&0u64.to_le_bytes())
+            .map_err(|e| e.to_string())?; // dummy step
+
+        // Parameters
+        let mut params = Vec::new();
+        params.push({
+            let embed_lock = self.model.embedding.weight.lock().unwrap();
+            embed_lock.value.clone()
+        });
+        for block in &self.model.blocks {
+            params.push({
+                let r_lock = block.mixing.r_weight.lock().unwrap();
+                r_lock.value.clone()
+            });
+            params.push({
+                let k_lock = block.mixing.k_weight.lock().unwrap();
+                k_lock.value.clone()
+            });
+            params.push({
+                let v_lock = block.mixing.v_weight.lock().unwrap();
+                v_lock.value.clone()
+            });
+        }
+        params.push({
+            let head_lock = self.model.head.lock().unwrap();
+            head_lock.value.clone()
+        });
+
+        file.write_all(&(params.len() as u32).to_le_bytes())
+            .map_err(|e| e.to_string())?;
+        for p in params {
+            file.write_all(&(p.data.len() as u32).to_le_bytes())
+                .map_err(|e| e.to_string())?;
+            for &val in &p.data {
+                file.write_all(&val.to_le_bytes())
+                    .map_err(|e| e.to_string())?;
+            }
+        }
         Ok(())
     }
 
