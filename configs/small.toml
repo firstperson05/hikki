@@ -1,0 +1,24 @@
+[model]
+vocab_size = 4096   # proper BPE, not byte-level
+n_layers = 6
+d_model = 256
+seq_len = 256
+
+[training]
+batch_size = 8
+seq_len = 256
+max_steps = 10000
+warmup_steps = 500
+learning_rate = 6e-4
+min_lr = 6e-5
+weight_decay = 0.1
+grad_accum_steps = 4
+eval_every = 500
+save_every = 1000
+checkpoint_dir = "ckpts"
+clip_grad_norm = 1.0
+log_every = 100
+
+[tokenizer]
+vocab_size = 4096
+path = "tokenizer_4k.bpe"
