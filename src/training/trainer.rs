@@ -1,6 +1,6 @@
 use crate::config::TrainConfig;
 use crate::data::loader::DataLoader;
-use crate::model::lm::FastMindLM;
+use crate::model::lm::HikkiLM;
 use crate::tensor::autograd::Node;
 use crate::training::loss::cross_entropy_loss;
 use crate::training::optimizer::AdamW;
@@ -11,7 +11,7 @@ use std::path::Path;
 use std::time::Instant;
 
 pub struct Trainer {
-    pub model: FastMindLM,
+    pub model: HikkiLM,
     pub optimizer: AdamW,
     pub scheduler: CosineScheduler,
     pub train_loader: DataLoader,
@@ -92,7 +92,7 @@ impl DashboardState {
 
 impl Trainer {
     pub fn new(
-        model: FastMindLM,
+        model: HikkiLM,
         train_loader: DataLoader,
         val_loader: Option<DataLoader>,
         config: &TrainConfig,
@@ -164,7 +164,7 @@ impl Trainer {
         let _d_ffn = d_model * 4; // Approximation
         let n_layer = self.model.config.n_layer;
         let vocab = self.model.config.vocab_size;
-        let param_count = crate::model::lm::FastMindLM::estimate_param_count(&self.model.config);
+        let param_count = crate::model::lm::HikkiLM::estimate_param_count(&self.model.config);
         let param_str = if param_count >= 1_000_000 {
             format!("{:.1}M", param_count as f64 / 1_000_000.0)
         } else if param_count >= 1_000 {
@@ -217,7 +217,7 @@ impl Trainer {
         let mut lines = Vec::new();
         lines.push(format!("\u{2554}{}\u{2557}", border_h));
         lines.push(format!(
-            "\u{2551}  FastMind LM | {}L {}d | {} params | vocab {:<6} \u{2551}",
+            "\u{2551}  Hikki LM | {}L {}d | {} params | vocab {:<6} \u{2551}",
             n_layer, d_model, param_str, vocab
         ));
         lines.push(format!("\u{2560}{}\u{2563}", border_h));

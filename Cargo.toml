@@ -1,5 +1,5 @@
 [package]
-name = "fastmind-lm"
+name = "hikki"
 version = "0.1.0"
 edition = "2021"
 
@@ -13,9 +13,6 @@ rand = "0.8"
 num_cpus = "1.16"
 matrixmultiply = "0.3"
 
-[dev-dependencies]
-criterion = "0.5"
 
-[[bench]]
-name = "inference"
-harness = false
+[features]
+cuda = []

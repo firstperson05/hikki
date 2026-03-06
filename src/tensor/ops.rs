@@ -1,5 +1,12 @@
 use super::Tensor;
 use rayon::prelude::*;
+
+#[cfg(feature = "cuda")]
+use std::sync::OnceLock;
+
+#[cfg(feature = "cuda")]
+use crate::cuda::CudaDevice;
+
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
 
@@ -68,6 +75,19 @@ impl Tensor {
         }
 
         let mut out = vec![0.0; m * n];
+
+        #[cfg(feature = "cuda")]
+        {
+            static CUDA: OnceLock<Option<CudaDevice>> = OnceLock::new();
+            if let Some(device) = CUDA.get_or_init(CudaDevice::new) {
+                if device
+                    .matmul(m, k1, n, &self.data, &other.data, &mut out)
+                    .is_ok()
+                {
+                    return Tensor::new(vec![m, n], out);
+                }
+            }
+        }
 
         // Parallelize over M dimension to utilize all CPU cores
         let num_threads = rayon::current_num_threads().max(1);

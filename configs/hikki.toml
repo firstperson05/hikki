@@ -1,0 +1,32 @@
+# Hikki - Optimized Configuration
+# Target: ~15 minute training on TinyStories dataset (CPU/GPU)
+
+[model]
+vocab_size = 16384     # Standard BPE vocab size
+n_layer = 6            # Depth
+d_model = 256          # Model dimension
+d_ffn = 1024           # FFN inner dimension
+dropout = 0.1          # Regularization
+
+[train]
+batch_size = 32        # Total batch size
+seq_len = 256          # Context length
+max_steps = 5000       # Total training steps
+warmup_steps = 500     # LR warmup
+lr = 5e-4              # Peak learning rate
+min_lr = 5e-5          # Final learning rate
+weight_decay = 0.1     # Weight decay for AdamW
+grad_accum_steps = 4   # Effective batch size = batch_size * grad_accum_steps
+eval_every = 500       # How often to run evaluation
+save_every = 1000      # How often to save checkpoint
+log_every = 1          # Real-time dashboard update frequency
+clip_grad_norm = 1.0   # Gradient clipping
+checkpoint_dir = "ckpts"
+
+[tokenizer]
+vocab_size = 16384
+path = "tokenizer_16k.bpe"
+
+[data]
+train_path = "data/train.txt"
+val_path = "data/val.txt"

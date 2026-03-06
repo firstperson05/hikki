@@ -1,11 +1,11 @@
-use fastmind_lm::{config, data, inference, model, tokenizer, training};
+use hikki::{config, data, inference, model, tokenizer, training};
 
 use clap::{Parser, Subcommand};
 use std::fs;
 use std::path::Path;
 
 #[derive(Parser)]
-#[command(author, version, about = "FastMind LM: Hybrid RWKV-SSM Architecture", long_about = None)]
+#[command(author, version, about = "Hikki: Hybrid RWKV-SSM Architecture", long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -21,6 +21,8 @@ enum Commands {
         data: String,
         #[arg(short, long)]
         val: Option<String>,
+        #[arg(short, long)]
+        tokenizer: Option<String>,
     },
     /// Evaluate the model
     Eval {
@@ -80,7 +82,7 @@ fn print_startup_banner(vocab_size: usize, n_layer: usize, d_model: usize, param
     let threads = num_cpus::get();
 
     println!();
-    println!("FastMind LM v0.1.0");
+    println!("Hikki v0.1.0");
     println!("Architecture : Hybrid RWKV-SSM");
     println!("Parameters   : {}", format_number(param_count));
     println!("Vocab size   : {}", format_number(vocab_size));
@@ -97,14 +99,24 @@ fn main() -> Result<(), String> {
     let cli = Cli::parse();
 
     match &cli.command {
-        Commands::Train { config, data, val } => {
+        Commands::Train {
+            config,
+            data,
+            val,
+            tokenizer: tokenizer_arg,
+        } => {
             let config_str = fs::read_to_string(config).map_err(|e| e.to_string())?;
             let cfg: config::Config = toml::from_str(&config_str).map_err(|e| e.to_string())?;
 
             // 1. Load Tokenizer
-            let tokenizer_path = Path::new("tokenizer_16k.bpe");
+            let default_tok = "tokenizer_16k.bpe".to_string();
+            let tokenizer_path_str = tokenizer_arg.as_ref().unwrap_or(&default_tok);
+            let tokenizer_path = Path::new(tokenizer_path_str);
             if !tokenizer_path.exists() {
-                return Err("tokenizer_16k.bpe not found. Run 'tokenize' first.".to_string());
+                return Err(format!(
+                    "{} not found. Run 'tokenize' first.",
+                    tokenizer_path_str
+                ));
             }
             let tokenizer =
                 tokenizer::bpe::BpeTokenizer::load(tokenizer_path).map_err(|e| e.to_string())?;
@@ -112,13 +124,13 @@ fn main() -> Result<(), String> {
             let actual_vocab_size = tokenizer.vocab.len();
 
             // 2. Init Model
-            let model_config = model::lm::FastMindConfig {
+            let model_config = model::lm::HikkiConfig {
                 vocab_size: actual_vocab_size,
                 n_layer: cfg.model.n_layer,
                 n_embd: cfg.model.d_model,
                 seq_len: cfg.train.seq_len,
             };
-            let param_count = model::lm::FastMindLM::estimate_param_count(&model_config);
+            let param_count = model::lm::HikkiLM::estimate_param_count(&model_config);
 
             // ── Startup Banner ──
             print_startup_banner(
@@ -128,7 +140,7 @@ fn main() -> Result<(), String> {
                 param_count,
             );
 
-            let model = model::lm::FastMindLM::new(model_config);
+            let model = model::lm::HikkiLM::new(model_config);
 
             // 3. Init DataLoaders
             let train_ds = data::dataset::TextDataset::from_file(Path::new(data), &tokenizer)
@@ -175,18 +187,18 @@ fn main() -> Result<(), String> {
             let vocab_size = tokenizer.vocab.len();
 
             // 2. Load model architecture
-            let model_config = model::lm::FastMindConfig {
+            let model_config = model::lm::HikkiConfig {
                 vocab_size,
                 n_layer: 4,
                 n_embd: 128,
                 seq_len: 128,
             };
-            let param_count = model::lm::FastMindLM::estimate_param_count(&model_config);
+            let param_count = model::lm::HikkiLM::estimate_param_count(&model_config);
 
             // ── Startup Banner ──
             print_startup_banner(vocab_size, 4, 128, param_count);
 
-            let model = model::lm::FastMindLM::new(model_config);
+            let model = model::lm::HikkiLM::new(model_config);
 
             // 3. Load checkpoint weights
             model.load_checkpoint(Path::new(checkpoint))?;
@@ -249,18 +261,18 @@ fn main() -> Result<(), String> {
             let vocab_size = tokenizer.vocab.len();
 
             // 2. Init Model with architecture from tiny.toml
-            let model_config = model::lm::FastMindConfig {
+            let model_config = model::lm::HikkiConfig {
                 vocab_size,
                 n_layer: 4,
                 n_embd: 128,
                 seq_len: 128,
             };
-            let param_count = model::lm::FastMindLM::estimate_param_count(&model_config);
+            let param_count = model::lm::HikkiLM::estimate_param_count(&model_config);
 
             // ── Startup Banner ──
             print_startup_banner(vocab_size, 4, 128, param_count);
 
-            let model = model::lm::FastMindLM::new(model_config);
+            let model = model::lm::HikkiLM::new(model_config);
 
             // 3. Load actual weights
             model.load_checkpoint(Path::new(checkpoint))?;
@@ -387,7 +399,7 @@ fn main() -> Result<(), String> {
             Ok(())
         }
         Commands::Benchmark => {
-            println!("Running FastMind LM Benchmarks...");
+            println!("Running Hikki Benchmarks...");
             println!();
 
             // 1. Matmul
@@ -429,13 +441,13 @@ fn main() -> Result<(), String> {
 
             // 2. Forward Pass
             println!("2. Forward Pass (Batch=8, Seq=128) x 100:");
-            let m_cfg = model::lm::FastMindConfig {
+            let m_cfg = model::lm::HikkiConfig {
                 vocab_size: 4000,
                 n_layer: 4,
                 n_embd: 256,
                 seq_len: 128,
             };
-            let bench_model = model::lm::FastMindLM::new(m_cfg);
+            let bench_model = model::lm::HikkiLM::new(m_cfg);
             let input_ids = vec![0; 8 * 128];
             let start = std::time::Instant::now();
             let fwd_iters = 100;

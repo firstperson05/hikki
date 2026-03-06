@@ -8,15 +8,15 @@ use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::Path;
 
-pub struct FastMindConfig {
+pub struct HikkiConfig {
     pub vocab_size: usize,
     pub n_layer: usize,
     pub n_embd: usize,
     pub seq_len: usize,
 }
 
-pub struct FastMindLM {
-    pub config: FastMindConfig,
+pub struct HikkiLM {
+    pub config: HikkiConfig,
     pub embedding: Embedding,
     pub blocks: Vec<RWKVSSMBlock>,
     pub head: NodeRef, // Output projection weight
@@ -40,9 +40,9 @@ pub struct SSMParams {
     pub b_weight: Vec<f32>,
 }
 
-impl FastMindLM {
+impl HikkiLM {
     /// Estimate parameter count for model creation
-    pub fn estimate_param_count(config: &FastMindConfig) -> usize {
+    pub fn estimate_param_count(config: &HikkiConfig) -> usize {
         let embed_params = config.vocab_size * config.n_embd;
         let head_params = config.n_embd * config.vocab_size;
 
@@ -59,7 +59,7 @@ impl FastMindLM {
         embed_params + head_params + all_blocks_params
     }
 
-    pub fn new(config: FastMindConfig) -> Self {
+    pub fn new(config: HikkiConfig) -> Self {
         println!(
             "Creating model: {} layers, {} dim, vocab {} | {}M parameters",
             config.n_layer,

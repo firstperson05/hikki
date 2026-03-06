@@ -1,5 +1,5 @@
 use crate::inference::sampler::Sampler;
-use crate::model::lm::FastMindLM;
+use crate::model::lm::HikkiLM;
 use crate::tensor::Tensor;
 use crate::tokenizer::bpe::BpeTokenizer;
 
@@ -14,22 +14,22 @@ pub struct InferenceConfig {
     pub min_new_tokens: usize,
     pub use_beam_search: bool,
     pub beam_width: usize,
-    pub max_sentences: usize,  // NEW: stop after N sentences
+    pub max_sentences: usize, // NEW: stop after N sentences
 }
 
 impl Default for InferenceConfig {
     fn default() -> Self {
         Self {
             max_new_tokens: 128,
-            temperature: 0.5,  // Better for small models: less random
-            top_p: 0.85,       // More focused sampling
-            top_k: 20,         // More focused for undertrained models
-            repetition_penalty: 1.5,  // Stronger penalty for coherence
-            repetition_window: 64,    // Larger context window
-            min_new_tokens: 5,        // Prevent immediate EOS
+            temperature: 0.5,        // Better for small models: less random
+            top_p: 0.85,             // More focused sampling
+            top_k: 20,               // More focused for undertrained models
+            repetition_penalty: 1.5, // Stronger penalty for coherence
+            repetition_window: 64,   // Larger context window
+            min_new_tokens: 5,       // Prevent immediate EOS
             use_beam_search: false,
             beam_width: 4,
-            max_sentences: 3,         // Stop after 3 sentences
+            max_sentences: 3, // Stop after 3 sentences
         }
     }
 }
@@ -39,12 +39,21 @@ impl InferenceConfig {
         for pair in config_str.split_whitespace() {
             if let Some((key, value)) = pair.split_once('=') {
                 match key {
-                    "temperature" => self.temperature = value.parse().map_err(|_| "Invalid temperature")?,
+                    "temperature" => {
+                        self.temperature = value.parse().map_err(|_| "Invalid temperature")?
+                    }
                     "top_p" => self.top_p = value.parse().map_err(|_| "Invalid top_p")?,
                     "top_k" => self.top_k = value.parse().map_err(|_| "Invalid top_k")?,
-                    "repetition_penalty" => self.repetition_penalty = value.parse().map_err(|_| "Invalid repetition_penalty")?,
-                    "max_new_tokens" => self.max_new_tokens = value.parse().map_err(|_| "Invalid max_new_tokens")?,
-                    "max_sentences" => self.max_sentences = value.parse().map_err(|_| "Invalid max_sentences")?,
+                    "repetition_penalty" => {
+                        self.repetition_penalty =
+                            value.parse().map_err(|_| "Invalid repetition_penalty")?
+                    }
+                    "max_new_tokens" => {
+                        self.max_new_tokens = value.parse().map_err(|_| "Invalid max_new_tokens")?
+                    }
+                    "max_sentences" => {
+                        self.max_sentences = value.parse().map_err(|_| "Invalid max_sentences")?
+                    }
                     _ => return Err(format!("Unknown config key: {}", key)),
                 }
             }
@@ -65,17 +74,17 @@ impl InferenceConfig {
 }
 
 pub struct InferenceEngine {
-    pub model: FastMindLM,
+    pub model: HikkiLM,
     pub tokenizer: BpeTokenizer,
     pub state: Vec<Tensor>,
     pub sampler: Sampler,
     pub recent_tokens: Vec<u32>,
-    pub context_window: Vec<u32>,  // NEW: sliding context for coherence
-    pub max_context_size: usize,   // NEW: max tokens in context window
+    pub context_window: Vec<u32>, // NEW: sliding context for coherence
+    pub max_context_size: usize,  // NEW: max tokens in context window
 }
 
 impl InferenceEngine {
-    pub fn new(model: FastMindLM, tokenizer: BpeTokenizer, seed: u64) -> Self {
+    pub fn new(model: HikkiLM, tokenizer: BpeTokenizer, seed: u64) -> Self {
         let state = model.initial_state();
         Self {
             model,
@@ -84,7 +93,7 @@ impl InferenceEngine {
             sampler: Sampler::new(seed),
             recent_tokens: Vec::new(),
             context_window: Vec::new(),
-            max_context_size: 512,  // Keep last 512 tokens for context
+            max_context_size: 512, // Keep last 512 tokens for context
         }
     }
 
@@ -99,12 +108,12 @@ impl InferenceEngine {
         if prompt_tokens.len() > 10 {
             println!("Processing prompt... [{} tokens]", prompt_tokens.len());
         }
-        
+
         for &token in prompt_tokens {
             let _logits = self.model.step(token, &mut self.state)?;
             self.update_context_window(token);
         }
-        
+
         Ok(())
     }
 
@@ -129,14 +138,18 @@ impl InferenceEngine {
 
         // 1. Warm up state with prompt (NEW: proper warmup)
         self.warm_up_state(&tokens)?;
-        
+
         // Get last token for generation start
-        let mut last_token = if tokens.is_empty() { 0 } else { *tokens.last().unwrap() };
+        let mut last_token = if tokens.is_empty() {
+            0
+        } else {
+            *tokens.last().unwrap()
+        };
 
         // 2. Generate new tokens with sentence awareness
         let mut tokens_generated = 0;
         let mut sentences_completed = 0;
-        
+
         for _ in 0..config.max_new_tokens {
             let logits_tensor = self.model.step(last_token, &mut self.state)?;
             let mut logits = logits_tensor.data;
@@ -171,10 +184,10 @@ impl InferenceEngine {
             }
 
             let piece = self.tokenizer.decode(&[next_token]);
-            
+
             // Handle UTF-8 properly - accumulate bytes and only add valid UTF-8 sequences
             utf8_buffer.extend_from_slice(piece.as_bytes());
-            
+
             // Try to decode what we have so far
             if let Ok(valid_str) = String::from_utf8(utf8_buffer.clone()) {
                 result.push_str(&valid_str);
@@ -190,7 +203,9 @@ impl InferenceEngine {
             // NEW: Check sentence boundaries for stopping
             if self.is_sentence_boundary(next_token) {
                 sentences_completed += 1;
-                if sentences_completed >= config.max_sentences && tokens_generated >= config.min_new_tokens {
+                if sentences_completed >= config.max_sentences
+                    && tokens_generated >= config.min_new_tokens
+                {
                     break;
                 }
             }
@@ -260,10 +275,10 @@ impl InferenceEngine {
             }
 
             let piece = self.tokenizer.decode(&[next_token]);
-            
+
             // UTF-8 handling for streaming
             utf8_buffer.extend_from_slice(piece.as_bytes());
-            
+
             if let Ok(valid_str) = String::from_utf8(utf8_buffer.clone()) {
                 callback(&valid_str);
                 utf8_buffer.clear();
@@ -286,7 +301,12 @@ impl InferenceEngine {
         Ok(())
     }
 
-    pub fn generate_beam_search(&mut self, prompt: &str, max_tokens: usize, _beam_width: usize) -> Result<String, String> {
+    pub fn generate_beam_search(
+        &mut self,
+        prompt: &str,
+        max_tokens: usize,
+        _beam_width: usize,
+    ) -> Result<String, String> {
         // For now, use greedy generation as beam search needs more complex state management
         // TODO: Implement proper beam search with state tracking per beam
         let mut config = InferenceConfig::default();
